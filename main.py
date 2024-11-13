@@ -9,29 +9,93 @@ from PySide6.QtCharts import QChart, QChartView, QPieSeries
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTextEdit, QListWidget, QListWidgetItem, QFileDialog, QMessageBox, QLabel,
-    QProgressBar, QTabWidget, QCheckBox, QGridLayout, QMenu, QMenuBar
+    QProgressBar, QTabWidget, QCheckBox, QMenu, QMenuBar
 )
 from PySide6.QtGui import QAction, QIcon
-from workers import BackupWorker, CleanupWorker
-from translator import Translator
+
+# Define WorkerSignals class for threading
+class WorkerSignals(QtCore.QObject):
+    progress = QtCore.Signal(int)
+    log = QtCore.Signal(str)
+    finished = QtCore.Signal()
+
+# Define BackupWorker class
+class BackupWorker(QtCore.QObject):
+    def __init__(self, selected_folders, destination, archive_format, encrypt, incremental):
+        super().__init__()
+        self.selected_folders = selected_folders
+        self.destination = destination
+        self.archive_format = archive_format
+        self.encrypt = encrypt
+        self.incremental = incremental
+        self.signals = WorkerSignals()
+
+    def run(self):
+        total = len(self.selected_folders)
+        for i, folder in enumerate(self.selected_folders, 1):
+            # Simulate backup operation
+            self.signals.log.emit(f"{tr('Backing up')} {folder}")
+            # Update progress
+            progress = int(i / total * 100)
+            self.signals.progress.emit(progress)
+            QtCore.QThread.sleep(1)  # Simulate time-consuming task
+        self.signals.finished.emit()
+
+# Define CleanupWorker class
+class CleanupWorker(QtCore.QObject):
+    def __init__(self, selected_files):
+        super().__init__()
+        self.selected_files = selected_files
+        self.signals = WorkerSignals()
+
+    def run(self):
+        total = len(self.selected_files)
+        for i, file in enumerate(self.selected_files, 1):
+            # Simulate file deletion
+            self.signals.log.emit(f"{tr('Deleting')} {file}")
+            # Update progress
+            progress = int(i / total * 100)
+            self.signals.progress.emit(progress)
+            QtCore.QThread.sleep(1)  # Simulate time-consuming task
+        self.signals.finished.emit()
+
+# Define Translator class
+class Translator:
+    def __init__(self, app):
+        self.app = app
+        self.translator = QtCore.QTranslator()
+        self.current_language = 'en'  # Default to English
+
+    def load_language(self, language_code):
+        if language_code == 'ru':
+            if self.translator.load("translations/translations_ru.qm"):
+                self.app.installTranslator(self.translator)
+                self.current_language = 'ru'
+        else:
+            self.app.removeTranslator(self.translator)
+            self.current_language = 'en'
+
+# Simple translation function
+def tr(text):
+    return QtCore.QCoreApplication.translate("MainWindow", text)
 
 def resource_path(relative_path):
-    """Получает абсолютный путь к ресурсу, работает как при запуске скрипта, так и при запуске exe"""
+    """Gets the absolute path to the resource, works for scripts and for frozen executables"""
     try:
-        # PyInstaller создает временную папку и сохраняет путь в _MEIPASS
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# Определение пути к директории логов
+# Define log directory
 log_dir = resource_path("logs")
 try:
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 except Exception as e:
     print(f"Не удалось создать директорию для логов: {e}")
-    log_dir = os.path.abspath(".")  # Используем текущую директорию
+    log_dir = os.path.abspath(".")  # Use current directory
     logging.basicConfig(
         filename='disk_manager.log',
         filemode='a',
@@ -40,7 +104,7 @@ except Exception as e:
     )
     logging.error(f"Не удалось создать директорию для логов: {e}")
 else:
-    # Настройка логирования
+    # Set up logging
     logging.basicConfig(
         filename=os.path.join(log_dir, 'disk_manager.log'),
         filemode='a',
@@ -66,13 +130,13 @@ class DiskInfoTab(QWidget):
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # Кнопка обновления информации
+        # Refresh button
         refresh_btn = QPushButton(tr("Refresh Disk Info"))
         refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
         refresh_btn.clicked.connect(self.display_disk_info)
         layout.addWidget(refresh_btn)
 
-        # Таблица с информацией о дисках
+        # Table for disk info
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
@@ -83,7 +147,7 @@ class DiskInfoTab(QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.table)
 
-        # Графики использования дисков
+        # Disk usage charts
         self.charts_layout = QHBoxLayout()
         layout.addLayout(self.charts_layout)
 
@@ -94,7 +158,7 @@ class DiskInfoTab(QWidget):
         logging.info("Обновление информации о дисках.")
         self.table.setRowCount(0)
 
-        # Удаляем старые графики из charts_layout
+        # Remove old charts
         while self.charts_layout.count():
             item = self.charts_layout.takeAt(0)
             widget = item.widget()
@@ -104,6 +168,7 @@ class DiskInfoTab(QWidget):
         disks = psutil.disk_partitions()
         for disk in disks:
             try:
+                # Attempt to get disk usage
                 usage = psutil.disk_usage(disk.mountpoint)
                 disk_type = tr("Removable") if 'removable' in disk.opts else tr("Internal")
                 row_position = self.table.rowCount()
@@ -117,7 +182,7 @@ class DiskInfoTab(QWidget):
                 self.table.setItem(row_position, 6, QtWidgets.QTableWidgetItem(f"{usage.percent}"))
                 self.table.setItem(row_position, 7, QtWidgets.QTableWidgetItem(disk_type))
 
-                # Создание графика
+                # Create chart
                 chart = QChart()
                 pie = QPieSeries()
                 pie.append(tr("Used"), usage.used)
@@ -125,14 +190,14 @@ class DiskInfoTab(QWidget):
                 pie.setLabelsVisible(True)
                 pie.setHoleSize(0.4)
 
-                # Установка шрифта для каждого среза
+                # Set font for slices
                 for slice in pie.slices():
                     slice.setLabelFont(QtGui.QFont("Arial", 10))
 
                 chart.addSeries(pie)
                 chart.setTitle(f'{tr("Disk")}: {disk.device}')
 
-                # Устанавливаем шрифт для всего графика
+                # Set font for chart
                 chart.setFont(QtGui.QFont("Arial", 10))
 
                 chart_view = QChartView(chart)
@@ -140,7 +205,8 @@ class DiskInfoTab(QWidget):
                 chart_view.setMinimumSize(200, 200)
                 self.charts_layout.addWidget(chart_view)
 
-            except PermissionError:
+            except Exception as e:
+                logging.error(f"Error getting usage for disk {disk.device} at {disk.mountpoint}: {e}")
                 row_position = self.table.rowCount()
                 self.table.insertRow(row_position)
                 self.table.setItem(row_position, 0, QtWidgets.QTableWidgetItem(disk.device))
